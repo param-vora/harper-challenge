@@ -1,10 +1,12 @@
 // pages/api/generate-pdf.js
 import Anvil from '@anvilco/anvil';
 import { getAuth } from '@clerk/nextjs/server';
-import { AGENCY_INFO } from '../../config/formSchema'; // Import hardcoded agency info
+// Agency info is now passed in formData, no longer needed here
+// import { AGENCY_INFO } from '../../config/formSchema';
 
 // --- Parsing/Formatting Helpers (Keep from previous version) ---
 function parseAddressToAnvil(fullAddress) {
+    // ... (keep existing implementation - unchanged) ...
     const result = { street1: '', street2: '', city: '', state: '', zip: '', country: 'US' };
     if (!fullAddress || typeof fullAddress !== 'string') {
         return result;
@@ -57,6 +59,7 @@ function parseAddressToAnvil(fullAddress) {
 }
 
 function parseFullNameToAnvil(fullName) {
+     // ... (keep existing implementation - unchanged) ...
      const result = { firstName: '', lastName: '' };
      if (!fullName || typeof fullName !== 'string') {
         return result;
@@ -72,6 +75,7 @@ function parseFullNameToAnvil(fullName) {
 }
 
 function formatPhoneToAnvil(phone) {
+    // ... (keep existing implementation - unchanged) ...
     if (!phone || typeof phone !== 'string') return undefined;
     const digits = phone.replace(/\D/g, '');
     return digits ? { num: digits } : undefined;
@@ -98,36 +102,48 @@ export default async function handler(req, res) {
   }
 
   try {
-    const formData = req.body; // Data received from frontend
+    const formData = req.body; // Data received from frontend (now includes defaults and agency info)
+    console.log("[API/GeneratePdf] Received formData:", JSON.stringify(formData, null, 2));
 
     // Data Transformation and Mapping based on confirmed Anvil slugs
     const applicantAddressParsed = parseAddressToAnvil(formData.applicant_address);
     const premiseAddressParsed = parseAddressToAnvil(formData.premise_address);
-    const legalNameParsed = parseFullNameToAnvil(formData.legal_name);
+    // Use legal_name directly (assuming it's a single field now, adjust if parsing needed)
+    // const legalNameParsed = parseFullNameToAnvil(formData.legal_name);
+    const legalNameValue = formData.legal_name || ''; // Handle potential empty string
     const businessPhoneFormatted = formatPhoneToAnvil(formData.business_phone);
     const contactPhoneFormatted = formatPhoneToAnvil(formData.contact_phone);
 
-    const effectiveDate = formData.policy_eff_date || '2025-04-01';
-    const expirationDate = formData.policy_exp_date || '2026-04-01';
-    const natureOfBusinessValue = formData.nature_of_business || 'Other';
+    // REMOVED: Default/Fallback logic for dates and nature of business - use values from formData
+    // const effectiveDate = formData.policy_eff_date || '2025-04-01';
+    // const expirationDate = formData.policy_exp_date || '2026-04-01';
+    // const natureOfBusinessValue = formData.nature_of_business || 'Other';
+
+    // Construct the agency string for Anvil from formData fields
+    // Assumes Anvil expects a single multi-line string for the 'agency' slug based on previous code.
+    const agencyString = [
+        formData.agency_name,
+        formData.agency_address,
+        formData.agency_phone ? `Phone: ${formData.agency_phone}` : null, // Add phone/email if available
+        formData.agency_email ? `Email: ${formData.agency_email}` : null,
+        formData.agency_contact_name ? `Contact: ${formData.agency_contact_name}` : null,
+    ].filter(Boolean).join('\n'); // Filter out nulls and join with newline
 
     // Map form data to Anvil slugs
     const anvilPayloadData = {
-        // --- Agency Info (Hardcoded) ---
-        agency: `${AGENCY_INFO.name}\n${AGENCY_INFO.address}`,
+        // --- Agency Info (Now from formData) ---
+        agency: agencyString, // Use the constructed string
 
         // --- Standard Info ---
         date: new Date().toISOString().split('T')[0],
         transactionStatus: "Quote",
 
-        // --- Policy Info ---
-        proposedEffectiveDate: effectiveDate,
-        proposedExpirationDate: expirationDate,
-        // proposedEffectiveDate1: effectiveDate, // Assuming these duplicates are not needed unless confirmed
-        // proposedExpirationDate1: expirationDate,
+        // --- Policy Info (Directly from formData) ---
+        proposedEffectiveDate: formData.policy_eff_date,
+        proposedExpirationDate: formData.policy_exp_date,
 
         // --- Applicant Info (Page 1) ---
-        applicantName: legalNameParsed,
+        applicantName: legalNameValue, // Use the direct value
         mailingAddress: applicantAddressParsed,
         businessPhone: businessPhoneFormatted,
         applicantBusinessType: formData.applicant_entity_type,
@@ -138,44 +154,44 @@ export default async function handler(req, res) {
         // --- Contact Info (Page 2) ---
         phoneACNoExt: contactPhoneFormatted, // Maps contact_phone
         // Add email if slug confirmed: emailSlug: formData.contact_email
-        // Add name if slug confirmed: contactNameSlug: contactNameParsed
+        // Add name if slug confirmed: contactNameSlug: parseFullNameToAnvil(formData.contact_name)
 
         // --- Premises Info (Page 2 - First Location) ---
         street: premiseAddressParsed, // Maps premise_address
-        insideCityLimits: formData.city_limits === 'Inside' || undefined,
-        outsideCityLimits: formData.city_limits === 'Outside' || undefined,
-        annualRevenues: formData.annual_revenue !== null ? Number(formData.annual_revenue) : undefined,
-        // Add other premise fields if slugs are known (e.g., fullTimeEmployees)
+        insideCityLimits: formData.city_limits === 'Inside' || undefined, // Keep boolean logic
+        outsideCityLimits: formData.city_limits === 'Outside' || undefined, // Keep boolean logic
+        // Ensure revenue is number or undefined
+        annualRevenues: formData.annual_revenue != null && !isNaN(Number(formData.annual_revenue))
+                        ? Number(formData.annual_revenue)
+                        : undefined,
 
-        // --- Nature of Business (Page 2) ---
-        natureOfBusiness: natureOfBusinessValue,
+        // --- Nature of Business (Page 2 - Directly from formData) ---
+        natureOfBusiness: formData.nature_of_business, // Use the value provided (will be 'Other' if defaulted)
         descriptionOfPrimaryOperations: formData.business_description,
     };
 
     // Clean up payload: remove null/undefined/empty strings/empty objects
     for (const key in anvilPayloadData) {
       const value = anvilPayloadData[key];
-      if (value === null || value === undefined || value === '') {
+      if (value === null || value === undefined || value === '' || (typeof value === 'object' && value !== null && Object.keys(value).length === 0)) {
         delete anvilPayloadData[key];
-      } else if (typeof value === 'object' && Object.keys(value).length === 0) {
-         delete anvilPayloadData[key];
       } else if (typeof value === 'object' && value !== null) {
+           // Clean sub-objects (like parsed addresses/phones)
            for (const subKey in value) {
                 if (value[subKey] === null || value[subKey] === undefined || value[subKey] === '') {
                    delete value[subKey];
                  }
            }
-            if (Object.keys(value).length === 0) {
+           // Delete the whole object if it became empty after cleaning sub-keys
+           if (Object.keys(value).length === 0) {
                 delete anvilPayloadData[key];
-            }
+           }
       }
     }
 
     // Final Anvil payload structure
     const payload = {
         // title: `${formData.legal_name || 'applicant'}_ACORD125`, // Optional
-        // fontSize: 10, // Optional
-        // textColor: '#000000', // Optional
         data: anvilPayloadData
      };
 
@@ -183,18 +199,14 @@ export default async function handler(req, res) {
 
     const anvilClient = new Anvil({ apiKey: anvilApiKey });
 
-    // ***** CORRECTED METHOD CALL *****
     const { statusCode, data, errors } = await anvilClient.fillPDF(castEid, payload);
-    // ***** END CORRECTION *****
-
 
     if (statusCode !== 200 || !data || errors) {
         console.error('Anvil PDF generation error:', errors || `Status code: ${statusCode}`);
-        console.error('Payload sent:', JSON.stringify(payload, null, 2));
-        throw new Error(`Failed to generate PDF from Anvil. Status: ${statusCode}`);
+        console.error('Payload sent:', JSON.stringify(payload, null, 2)); // Log payload on error
+        throw new Error(`Failed to generate PDF from Anvil. Status: ${statusCode}. ${errors ? JSON.stringify(errors) : ''}`);
     }
 
-    // data should contain the PDF buffer when using fillPDF
     const pdfBuffer = Buffer.from(data);
 
     // Set headers for PDF download

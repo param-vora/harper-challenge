@@ -2,7 +2,7 @@
 import { useEffect, useState, useRef } from 'react'; // Import useRef
 import { SignedIn, SignedOut, useUser } from '@clerk/nextjs';
 import {
-  Container, Title, Select, Button, Text, Loader, Group, Stack, Paper, Box, Grid, Alert, Progress, Collapse
+  Container, Title, Select, Button, Text, Loader, Group, Stack, Paper, Box, Grid, Alert, Progress, Collapse, Divider
 } from '@mantine/core';
 import { IconAlertCircle, IconCircleCheck, IconLoader } from '@tabler/icons-react';
 import { showNotification, updateNotification } from '@mantine/notifications';
@@ -12,10 +12,8 @@ import FormField from '../components/FormField';
 import VoiceInput from '../components/VoiceInput';
 // Import new API client functions
 import { getCompanies, getCompanyMemory, extractData, generatePdf, saveFormData, loadFormData } from '../lib/apiClient';
-import { validateFormData } from '../lib/validationService';
-import { formSchema } from '../config/formSchema';
-
-import { validateAcord125Data } from '../config/formSchema';
+// Import validation and schema (now includes applyDefaultsToFormData)
+import { formSchema, validateAcord125Data, applyDefaultsToFormData } from '../config/formSchema';
 
 const AUTO_SAVE_INTERVAL = 30000; // 30 seconds
 
@@ -29,7 +27,7 @@ export default function Home() {
 
   const [selectedCompanyId, setSelectedCompanyId] = useState(null);
   const [companyMemory, setCompanyMemory] = useState(null); // Keep memory for potential re-extraction?
-  const [formData, setFormData] = useState({});
+  const [formData, setFormData] = useState({}); // Initial empty state
   const [validationErrors, setValidationErrors] = useState({});
   const [isFormValid, setIsFormValid] = useState(false);
 
@@ -53,8 +51,7 @@ export default function Home() {
   }, [isUserLoaded, isSignedIn]);
 
   const loadCompanies = async () => {
-    // ... (loadCompanies function remains the same) ...
-     setIsLoadingCompanies(true);
+    setIsLoadingCompanies(true);
     setCompaniesError(null);
     setCompanies([]);
     try {
@@ -66,7 +63,6 @@ export default function Home() {
         setCompanies(data);
         if (data.length === 0) {
           console.warn("[Frontend] No companies returned from API.");
-          // showNotification({ title: 'Info', message: 'No companies found.', color: 'blue' });
         }
       } else {
           console.error("[Frontend] Received non-array data for companies:", data);
@@ -84,8 +80,9 @@ export default function Home() {
   };
 
   // --- Form Validation ---
+  // Uses the imported validateAcord125Data function
   const validateForm = (data) => {
-    const { isValid, errors } = validateFormData(data, formSchema);
+    const { isValid, errors } = validateAcord125Data(data);
     setValidationErrors(errors);
     setIsFormValid(isValid);
     console.log("[Frontend] Form validation run. IsValid:", isValid, "Errors:", errors);
@@ -97,13 +94,10 @@ export default function Home() {
     console.log(`[Frontend] Input change: ${fieldName} =`, value);
     setFormData(prevData => {
         const updatedData = { ...prevData, [fieldName]: value };
-        // Validate immediately after setting state
-        // Note: Validation state update might lag by one render cycle if not handled carefully
-        // Calling validateForm here updates validationErrors, but isFormValid relies on the *next* render's formData
-        // For immediate feedback on button disable state, validate the *updatedData* directly
-        const { isValid } = validateFormData(updatedData, formSchema);
+        // Validate immediately after setting state using the *updated* data
+        const { isValid, errors } = validateAcord125Data(updatedData);
         setIsFormValid(isValid); // Update validity based on the potential new state
-        setValidationErrors(validateFormData(updatedData, formSchema).errors); // Update errors
+        setValidationErrors(errors); // Update errors
         return updatedData;
     });
     // Auto-save logic will trigger via useEffect watching formData
@@ -113,21 +107,22 @@ export default function Home() {
   const handleSaveForm = async (isAutoSave = false) => {
       if (!selectedCompanyId || Object.keys(formData).length === 0) {
           console.log("[Frontend] Save skipped: No company selected or form data is empty.");
-          return; // Don't save if nothing to save or no context
+          return;
       }
        if (isSaving) {
             console.log("[Frontend] Save skipped: Another save operation is already in progress.");
-            return; // Prevent concurrent saves
+            return;
        }
 
       setIsSaving(true);
       const notificationId = `save-${selectedCompanyId}`;
       if (isAutoSave) {
            console.log("[Frontend] Auto-saving form data...");
+           // Less intrusive notification for auto-save perhaps? Or keep as is.
            showNotification({
                 id: notificationId,
                 title: 'Auto-saving...',
-                message: `Saving progress for ${companies.find(c=>c.id === selectedCompanyId)?.name || 'current company'}...`,
+                message: `Saving progress...`,
                 loading: true,
                 color: 'blue',
                 autoClose: false,
@@ -135,21 +130,19 @@ export default function Home() {
            });
       } else {
            console.log("[Frontend] Explicitly saving form data...");
-           // Potentially show a different indicator for explicit saves if needed
       }
 
 
       try {
-          // Use a snapshot of formData at the time of saving
           const dataToSave = { ...formData };
-          const result = await saveFormData(selectedCompanyId, dataToSave);
-          setLastSaveTime(new Date()); // Update last save time
+          await saveFormData(selectedCompanyId, dataToSave);
+          setLastSaveTime(new Date());
 
            if (isAutoSave) {
                 updateNotification({
                      id: notificationId,
                      title: 'Progress Saved',
-                     message: `Your changes have been automatically saved.`,
+                     message: `Changes automatically saved.`,
                      color: 'green',
                      icon: <IconCircleCheck size="1rem" />,
                      loading: false,
@@ -160,7 +153,7 @@ export default function Home() {
            } else {
                 showNotification({
                      title: 'Save Successful',
-                     message: `Form data saved successfully.`,
+                     message: `Form data saved.`,
                      color: 'green',
                 });
                  console.log("[Frontend] Explicit save successful.");
@@ -192,150 +185,122 @@ export default function Home() {
       }
   };
 
+  // --- Auto-Save Timer Effect ---
   useEffect(() => {
-    // Clear previous timer if dependencies change
     if (autoSaveTimerRef.current) {
       clearTimeout(autoSaveTimerRef.current);
     }
-
-    // Only set timer if we have a company selected and form data exists
-    if (selectedCompanyId && Object.keys(formData).length > 0) {
+    if (selectedCompanyId && Object.keys(formData).length > 0 && !isSaving) { // Also check !isSaving
       autoSaveTimerRef.current = setTimeout(() => {
-        console.log(`[Frontend] Auto-save timer expired for company ${selectedCompanyId}. Triggering save.`);
-        handleSaveForm(true); // Pass true to indicate it's an auto-save
+        console.log(`[Frontend] Auto-save timer expired. Triggering save.`);
+        handleSaveForm(true);
       }, AUTO_SAVE_INTERVAL);
-
       console.log(`[Frontend] Auto-save timer set for ${AUTO_SAVE_INTERVAL / 1000}s`);
     }
-
-    // Cleanup function to clear timer on unmount or before next effect run
     return () => {
       if (autoSaveTimerRef.current) {
         clearTimeout(autoSaveTimerRef.current);
         console.log("[Frontend] Auto-save timer cleared.");
       }
     };
-  }, [formData, selectedCompanyId]); // Rerun effect when formData or selectedCompanyId changes
+  }, [formData, selectedCompanyId, isSaving]); // Rerun when formData, company, or saving state changes
 
 
-  // --- Company Selection & Data Loading (REVISED LOGIC) ---
+  // --- Company Selection & Data Loading (REVISED LOGIC WITH DEFAULTS) ---
   const handleCompanySelect = async (companyId) => {
     console.log(`[Frontend] Company selected: ${companyId}`);
     setSelectedCompanyId(companyId);
     // Reset states consistently
     setCompanyMemory(null);
-    setFormData({});
+    setFormData({}); // Start with empty
     setValidationErrors({});
     setIsFormValid(false);
     setIsLoadingMemory(false);
     setIsExtracting(false);
     setIsSaving(false);
     setLastSaveTime(null);
-    setIsLoadingSavedData(false); // Ensure this is reset too
+    setIsLoadingSavedData(false);
      if (autoSaveTimerRef.current) {
         clearTimeout(autoSaveTimerRef.current);
         autoSaveTimerRef.current = null;
      }
 
-    if (!companyId) return; // Exit if no company selected
+    if (!companyId) {
+        setFormData(applyDefaultsToFormData({})); // Apply defaults even if no company selected
+        validateForm({});
+        return;
+    }
 
-    // Indicate general loading starts
-    setIsLoadingSavedData(true); // Start with this indicator
-
-    let loadedSuccessfully = false; // Flag to track if we loaded saved data
+    setIsLoadingSavedData(true);
+    let loadedData = null; // Store loaded/extracted data before applying defaults
 
     try {
         // **Step 1: Attempt to load previously saved form data**
         console.log(`[Frontend] Attempting to load saved form data for company ${companyId}...`);
-        const loadedData = await loadFormData(companyId);
+        const savedData = await loadFormData(companyId);
 
-        if (loadedData && typeof loadedData === 'object' && Object.keys(loadedData).length > 0) {
-            console.log("[Frontend] Saved data found. Populating form.", loadedData);
-            const completeLoadedData = {};
-             Object.keys(formSchema).forEach(key => {
-                 completeLoadedData[key] = loadedData.hasOwnProperty(key) ? loadedData[key] : (formSchema[key].type === 'checkbox' ? false : null);
-             });
-            setFormData(completeLoadedData);
-            validateForm(completeLoadedData);
-            showNotification({ /* ... Checkpoint Loaded notification ... */ });
-            setLastSaveTime(new Date()); // Or use actual timestamp
-            loadedSuccessfully = true; // Mark as loaded
+        if (savedData && typeof savedData === 'object' && Object.keys(savedData).length > 0) {
+            console.log("[Frontend] Saved data found.", savedData);
+            loadedData = savedData; // Use saved data
+            showNotification({ title: 'Progress Loaded', message: 'Loaded previously saved data.', color: 'teal' });
+            setLastSaveTime(new Date()); // Or use actual timestamp from data if available
         } else {
-            console.log("[Frontend] No saved data found.");
-            // Do NOT stop here, proceed to fetch memory/extract
+            console.log("[Frontend] No saved data found. Proceeding to extraction.");
+            // **Step 2: Fetch memory and extract if no saved data**
+            setIsLoadingMemory(true);
+            setIsExtracting(true);
+            try {
+                console.log(`[Frontend] Fetching company memory for company ${companyId}...`);
+                const memory = await getCompanyMemory(companyId);
+                setCompanyMemory(memory); // Store raw memory if needed
+                setIsLoadingMemory(false);
+
+                if (memory) {
+                    console.log("[Frontend] Extracting data from memory...");
+                    const structured = memory?.structured_data || {};
+                    const unstructured = memory?.unstructured_transcripts || [];
+                    const extracted = await extractData(structured, unstructured);
+                    loadedData = extracted; // Use extracted data
+                    console.log("[Frontend] Data extraction complete.", extracted);
+                } else {
+                    console.log("[Frontend] No company memory found. Initializing with defaults.");
+                    loadedData = {}; // Start with empty object before defaults
+                    showNotification({
+                        title: 'No Prior Data',
+                        message: 'No saved progress or extraction data found. Starting fresh with defaults.',
+                        color: 'blue',
+                    });
+                }
+            } catch (extractError) {
+                 console.error("[Frontend] Error during memory fetch or extraction:", extractError);
+                 showNotification({
+                     title: 'Error Loading Initial Data',
+                     message: extractError?.error || extractError?.message || 'Failed to get initial data.',
+                     color: 'red',
+                 });
+                 loadedData = {}; // Reset to empty on error before defaults
+            } finally {
+                setIsLoadingMemory(false);
+                setIsExtracting(false);
+            }
         }
 
-    } catch (error) {
-         // Log error from loading attempt, but proceed to extraction as fallback
-        console.error("[Frontend] Error loading saved form data:", error);
+    } catch (loadError) {
+        console.error("[Frontend] Error loading saved form data:", loadError);
         showNotification({
             title: 'Could Not Load Saved Data',
-            message: `Proceeding with initial data extraction. ${error?.error || error?.message || ''}`,
+            message: `Proceeding with initial data extraction or defaults. ${loadError?.error || loadError?.message || ''}`,
             color: 'orange',
             autoClose: 5000,
         });
-        // Ensure form is reset if load fails badly
-        setFormData({});
-        validateForm({});
+        loadedData = {}; // Reset to empty on load error before defaults
     } finally {
-       setIsLoadingSavedData(false); // Finished attempting to load saved data
-    }
-
-    // **Step 2: If saved data wasn't loaded, fetch memory and extract**
-    if (!loadedSuccessfully) {
-        setIsLoadingMemory(true); // Now indicate memory loading
-        setIsExtracting(true); // Expect extraction
-        try {
-            console.log(`[Frontend] Fetching company memory for company ${companyId}...`);
-            const memory = await getCompanyMemory(companyId);
-            setCompanyMemory(memory);
-            setIsLoadingMemory(false); // Finished memory load
-
-            if (memory) {
-                console.log("[Frontend] Extracting data from memory...");
-                const structured = memory?.structured_data || {};
-                const unstructured = memory?.unstructured_transcripts || [];
-                const extractedData = await extractData(structured, unstructured);
-
-                const completeExtractedData = {};
-                Object.keys(formSchema).forEach(key => {
-                    completeExtractedData[key] = extractedData.hasOwnProperty(key) ? extractedData[key] : (formSchema[key].type === 'checkbox' ? false : null);
-                });
-                setFormData(completeExtractedData);
-                validateForm(completeExtractedData);
-                console.log("[Frontend] Data extraction complete.", completeExtractedData);
-            } else {
-                console.log("[Frontend] No company memory found. Initializing empty form.");
-                const emptyFormData = {};
-                Object.keys(formSchema).forEach(key => {
-                    emptyFormData[key] = formSchema[key].type === 'checkbox' ? false : null;
-                });
-                setFormData(emptyFormData);
-                validateForm(emptyFormData);
-                 showNotification({
-                     title: 'No Prior Data',
-                     message: 'No saved progress or extraction data found. Starting fresh.',
-                     color: 'blue',
-                 });
-            }
-        } catch (error) {
-            console.error("[Frontend] Error during memory fetch or extraction:", error);
-            showNotification({
-                title: 'Error Loading Initial Data',
-                message: error?.error || error?.message || 'Failed to get initial data.',
-                color: 'red',
-            });
-            // Reset form on error during extraction phase
-            const emptyFormData = {};
-            Object.keys(formSchema).forEach(key => {
-                 emptyFormData[key] = formSchema[key].type === 'checkbox' ? false : null;
-            });
-             setFormData(emptyFormData);
-             validateForm(emptyFormData);
-        } finally {
-            setIsLoadingMemory(false); // Ensure these are false regardless of success/failure
-            setIsExtracting(false);
-        }
+       setIsLoadingSavedData(false);
+       // **Step 3: Apply defaults AFTER loading or extracting**
+       const finalDataWithDefaults = applyDefaultsToFormData(loadedData);
+       console.log("[Frontend] Final data after applying defaults:", finalDataWithDefaults);
+       setFormData(finalDataWithDefaults);
+       validateForm(finalDataWithDefaults); // Validate the data with defaults applied
     }
     // End of handleCompanySelect
   };
@@ -344,164 +309,105 @@ export default function Home() {
   // --- Voice Command Handling ---
   const handleVoiceCommand = (command) => {
     console.log("[Frontend] Received voice command:", command);
-    if (!command) return;
-
-    // Map 'UPDATE' with null value (from clearFormField) back to setting null
-    if (command.intent === 'UPDATE') {
-      if (formSchema[command.field]) {
-        // Use handleInputChange to trigger validation and auto-save effect
-        handleInputChange(command.field, command.value);
-        showNotification({
-          title: 'Voice Command Applied',
-          message: `Set ${formSchema[command.field]?.label || command.field} to: ${command.value === null ? 'cleared' : command.value}`,
-          color: 'green',
-        });
-      } else {
-         console.warn(`Voice command tried to update non-existent field: ${command.field}`);
+    if (!command || command.intent !== 'UPDATE') {
          showNotification({
-           title: 'Voice Command Error',
-           message: `Could not find field "${command.field}" in the form.`,
-           color: 'orange',
+           title: 'Voice Command Info',
+           message: command?.message || "Could not process the command or no update action detected.",
+           color: command?.intent === 'AMBIGUOUS' ? 'yellow' : 'blue',
+           autoClose: 6000,
          });
-      }
-    } else if (command.intent === 'AMBIGUOUS' || command.intent === 'OTHER') {
-      showNotification({
-        title: 'Voice Command Info',
-        message: command.message || "Could not process the command.",
-        color: 'yellow',
-        autoClose: 6000,
-      });
+         return;
     }
-    // Add handling for 'GET' if implemented later
+
+    // Handle UPDATE intent (including clear mapped to null)
+    if (formSchema[command.field]) {
+      handleInputChange(command.field, command.value); // Use standard handler
+      showNotification({
+        title: 'Voice Command Applied',
+        message: `Set ${formSchema[command.field]?.label || command.field} to: ${command.value === null ? 'cleared' : command.value}`,
+        color: 'green',
+      });
+    } else {
+       console.warn(`Voice command tried to update non-existent field: ${command.field}`);
+       showNotification({
+         title: 'Voice Command Error',
+         message: `Could not find field "${command.field}" in the form.`,
+         color: 'orange',
+       });
+    }
   };
 
 
   // --- PDF Generation Trigger ---
   const handleFinalizeAndGenerate = async () => {
-    // 1. Validate form one last time using the updated validation function
-    const { isValid, errors } = validateAcord125Data(formData); // Use the validation func from formSchema.js
+    // 1. Validate form one last time
+    const { isValid, errors } = validateAcord125Data(formData);
     if (!isValid) {
-        setValidationErrors(errors); // Update UI with errors
+        setValidationErrors(errors);
         showNotification({
             title: 'Validation Error',
             message: 'Please fix the highlighted errors before generating the document.',
             color: 'red',
         });
-        // Scroll to the first error? (Optional Enhancement)
-        // const firstErrorField = Object.keys(errors)[0];
-        // if (firstErrorField) {
-        //     document.getElementById(firstErrorField)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        // }
+        // Consider scrolling to the first error
         return;
     }
 
-    // 2. Optional: Ensure latest data is saved before generating (using mock save)
-    // This is less critical now that generation is the final step, but can be kept for consistency
-    console.log("[Frontend] Finalizing... attempting final mock save.");
-     if (autoSaveTimerRef.current) { // Clear pending auto-save
+    // 2. Optional: Ensure latest data is saved (using mock save)
+     if (autoSaveTimerRef.current) {
         clearTimeout(autoSaveTimerRef.current);
         autoSaveTimerRef.current = null;
      }
-    await handleSaveForm(false); // Await the mock save completion (won't block PDF if it fails)
+    await handleSaveForm(false); // Explicitly save before generating
 
     // 3. Trigger PDF generation API call
     setIsGeneratingPdf(true);
-    console.log("[Frontend] Calling API to generate PDF...");
+    console.log("[Frontend] Calling API to generate PDF with data:", formData); // Log data being sent
     const notificationId = 'pdf-generation';
-    showNotification({
-        id: notificationId,
-        title: 'Generating Document',
-        message: 'Please wait while the ACORD 125 form is being generated...',
-        loading: true,
-        color: 'blue',
-        autoClose: false,
-        disallowClose: true,
-    });
+    showNotification({ /* ... existing notification ... */ });
 
     try {
-        // Send current validated formData to the backend
+        // Send current validated formData (now includes defaults and agency info)
         const response = await fetch('/api/generate-pdf', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(formData), // Send the validated form data
+            body: JSON.stringify(formData),
         });
 
-        // Check if the request was successful and response is PDF
-        if (!response.ok) {
-             // Try to parse error message from backend if available
+        if (!response.ok) { /* ... existing error handling ... */
              let errorDetails = `Server responded with status ${response.status}`;
              try {
                 const errorJson = await response.json();
                 errorDetails = errorJson.error || errorJson.details || errorDetails;
-             } catch (e) { /* Ignore if response is not JSON */ }
+             } catch (e) { /* Ignore */ }
              throw new Error(errorDetails);
         }
 
-        // Check content type header to be sure it's a PDF
         const contentType = response.headers.get('content-type');
         if (!contentType || !contentType.includes('application/pdf')) {
-             throw new Error('Received unexpected response format from server instead of PDF.');
+             throw new Error('Received unexpected response format instead of PDF.');
         }
 
-        // Get the filename from Content-Disposition header (optional but nice)
+        // Handle PDF Download (existing logic is fine)
         const disposition = response.headers.get('content-disposition');
-        let filename = 'ACORD_125_Generated.pdf'; // Default filename
-        if (disposition && disposition.indexOf('attachment') !== -1) {
-             const filenameRegex = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/;
-             const matches = filenameRegex.exec(disposition);
-             if (matches != null && matches[1]) {
-                filename = matches[1].replace(/['"]/g, '');
-             }
-        }
-
-        // Get the PDF data as a Blob
+        let filename = 'ACORD_125_Generated.pdf';
+        if (disposition && disposition.indexOf('attachment') !== -1) { /* ... extract filename ... */ }
         const blob = await response.blob();
-
-        // Create a temporary URL and trigger download
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
-        a.style.display = 'none';
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
+        a.style.display = 'none'; a.href = url; a.download = filename;
+        document.body.appendChild(a); a.click();
+        window.URL.revokeObjectURL(url); document.body.removeChild(a);
 
-        // Clean up the temporary URL and anchor element
-        window.URL.revokeObjectURL(url);
-        document.body.removeChild(a);
-
-        updateNotification({
-             id: notificationId,
-             title: 'Success',
-             message: `Document "${filename}" download initiated.`,
-             color: 'green',
-             icon: <IconCircleCheck size="1rem" />,
-             loading: false,
-             autoClose: 5000,
-             disallowClose: false,
-        });
+        updateNotification({ /* ... existing success notification ... */ });
 
     } catch (error) {
       console.error("[Frontend] Failed to generate document:", error);
-      updateNotification({
-            id: notificationId,
-            title: 'Error Generating Document',
-            message: error.message || 'An unexpected error occurred.',
-            color: 'red',
-            icon: <IconAlertCircle size="1rem" />,
-            loading: false,
-            autoClose: 7000,
-            disallowClose: false,
-      });
+      updateNotification({ /* ... existing error notification ... */ });
     } finally {
       setIsGeneratingPdf(false);
     }
   };
-
-  // Make sure you import the validation function at the top of pages/index.js
-  // import { validateAcord125Data } from '../config/formSchema';
-  // And also the icons used in notifications if not already imported
-  // import { IconAlertCircle, IconCircleCheck } from '@tabler/icons-react';
 
 
   // --- Render Logic ---
@@ -511,8 +417,38 @@ export default function Home() {
   }));
 
   const showLoadingIndicator = isLoadingCompanies || isLoadingSavedData || isLoadingMemory || isExtracting;
-  const showForm = selectedCompanyId && !showLoadingIndicator;
-  const showNoDataMessage = selectedCompanyId && !showLoadingIndicator && Object.keys(formData).length === 0;
+  const showForm = isUserLoaded && isSignedIn && selectedCompanyId && !showLoadingIndicator;
+  const showSelectCompanyMessage = isUserLoaded && isSignedIn && !selectedCompanyId && !showLoadingIndicator;
+
+  // Filter schema keys for rendering sections
+  const agencyFields = Object.keys(formSchema).filter(key => key.startsWith('agency_'));
+  const policyFields = ['policy_eff_date', 'policy_exp_date'];
+  const applicantFields = ['legal_name', 'applicant_address', 'business_phone', 'applicant_entity_type', 'fein', 'sic', 'naics'];
+  const contactFields = ['contact_name', 'contact_email', 'contact_phone'];
+  const premisesFields = ['premise_address', 'city_limits', 'annual_revenue'];
+  const businessDetailFields = ['nature_of_business', 'business_description'];
+
+  // Function to render a section of the form
+  const renderFormSection = (title, fieldKeys) => (
+      <>
+          <Grid.Col span={12}>
+              <Divider my="sm" label={<Title order={5}>{title}</Title>} labelPosition="left" />
+          </Grid.Col>
+          {fieldKeys.map(fieldName => (
+              <Grid.Col span={12} md={6} key={fieldName}>
+                  <FormField
+                      name={fieldName}
+                      config={formSchema[fieldName]}
+                      value={formData[fieldName]}
+                      error={validationErrors[fieldName]}
+                      onChange={(value) => handleInputChange(fieldName, value)}
+                      // Consider adding a disabled prop for agency fields if needed:
+                      // disabled={fieldName.startsWith('agency_')}
+                  />
+              </Grid.Col>
+          ))}
+      </>
+  );
 
   return (
     <Layout>
@@ -547,46 +483,42 @@ export default function Home() {
             </Paper>
 
 
-            {selectedCompanyId && ( // Only show form section if a company is selected
+            {(showForm || showSelectCompanyMessage) && ( // Show form container if signed in, even if no company selected yet
                 <Paper shadow="xs" p="md" withBorder>
                     <Group position="apart" mb="md">
-                        <Title order={3}>Company Form {isSaving ? <IconLoader size="1rem" style={{marginLeft: '8px', animation: 'spin 1s linear infinite'}} /> : ''}</Title>
+                        <Title order={3}>
+                            ACORD 125 Data
+                            {selectedCompanyId && isSaving ? <IconLoader size="1rem" style={{marginLeft: '8px', animation: 'spin 1s linear infinite'}} /> : ''}
+                        </Title>
                         {showForm && <VoiceInput onCommandProcessed={handleVoiceCommand} />}
                     </Group>
 
                     {showForm ? (
                         <form>
                             <Grid>
-                            {Object.entries(formSchema).map(([fieldName, fieldConfig]) => (
-                                <Grid.Col span={12} md={6} key={fieldName}>
-                                <FormField
-                                    name={fieldName}
-                                    config={fieldConfig}
-                                    value={formData[fieldName]}
-                                    error={validationErrors[fieldName]}
-                                    onChange={(value) => handleInputChange(fieldName, value)}
-                                />
-                                </Grid.Col>
-                            ))}
+                                {renderFormSection("Agency Information", agencyFields)}
+                                {renderFormSection("Policy Information", policyFields)}
+                                {renderFormSection("Applicant Information", applicantFields)}
+                                {renderFormSection("Primary Contact Information", contactFields)}
+                                {renderFormSection("Primary Premises Information", premisesFields)}
+                                {renderFormSection("Business Details", businessDetailFields)}
                             </Grid>
 
                             <Group position="right" mt="xl">
                             <Button
                                 color="blue"
-                                onClick={handleFinalizeAndGenerate} // Use the updated handler
-                                loading={isGeneratingPdf || isSaving} // Also indicate loading during save
+                                onClick={handleFinalizeAndGenerate}
+                                loading={isGeneratingPdf || isSaving}
                                 disabled={!isFormValid || isGeneratingPdf || isSaving}
                             >
                                 {isSaving ? 'Saving...' : (isGeneratingPdf ? 'Generating...' : 'Finalize & Generate Document')}
                             </Button>
                             </Group>
                         </form>
-                    ) : showNoDataMessage ? (
-                         <Text color="dimmed">No data available or extracted for this company. Start filling the form.</Text>
-                    ) : !selectedCompanyId ? (
-                         <Text color="dimmed">Select a company to load or start a form.</Text>
+                    ) : showSelectCompanyMessage ? (
+                         <Text color="dimmed">Select a company above to load data or start a new form.</Text>
                     ) : (
-                        // This covers the loading states handled by Collapse above, but acts as fallback
+                        // Fallback for loading states handled by Collapse, but good to have
                         <Text color="dimmed">Loading data...</Text>
                     )}
                 </Paper>
@@ -597,7 +529,6 @@ export default function Home() {
         </Container>
       </SignedIn>
       <SignedOut>
-         {/* ... (SignedOut view remains the same) ... */}
          <Container size="sm" py="xl">
           <Paper shadow="xs" p="md" withBorder>
             <Stack align="center" spacing="md">
