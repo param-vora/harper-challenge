@@ -1,0 +1,164 @@
+# Goal: Build a Next.js Application Scaffold for Harper AI Challenge
+
+## Overall Objective
+Create a functional Next.js application scaffold based on the provided plan. This scaffold will simulate the core workflow of selecting a company, fetching its data (from a mock Supabase DB), attempting to extract relevant info to pre-fill a mock form, allowing basic form edits (manual + voice command stub), and simulating PDF generation. The application should use Clerk for authentication and Mantine UI for components. It needs to be structured so that mock components (API calls, data extraction, PDF generation) can be easily replaced with real implementations later.
+
+## Core Technologies
+- **Framework:** Next.js (App Router or Pages Router - Pages Router might be simpler for quick API routes)
+- **UI Library:** Mantine UI (`@mantine/core`, `@mantine/hooks`)
+- **Authentication:** Clerk (`@clerk/nextjs`)
+- **Mock Database:** Supabase (`@supabase/supabase-js`)
+- **API Calls:** Axios
+- **State Management:** React `useState`, `useReducer`, `Context API` (as needed, keep simple)
+- **Voice Input (Scaffold):** Deepgram Browser SDK (`@deepgram/sdk`) - Primarily setup, minimal interaction logic for now.
+- **Environment:** Node.js (via Replit's Next.js template)
+
+## Phase 0: Setup & Mock Foundation
+
+1.  **Initialize Project:** Create a standard Next.js project using the Replit template (choose Pages Router if prompted, otherwise adapt). Initialize Git.
+2.  **Folder Structure:** Ensure the following structure exists:
+    - `/pages/api/` (for backend endpoints)
+    - `/components/` (for reusable UI components)
+    - `/lib/` (for helper functions, API clients, services)
+    - `/config/` (for configuration files like the form schema)
+    - `/db/` (optional, if complex Supabase interactions warrant helpers)
+3.  **Install Dependencies:** Install `axios`, `@supabase/supabase-js`, `@clerk/nextjs`, `@mantine/core`, `@mantine/hooks`, `@deepgram/sdk`.
+4.  **Clerk Integration:**
+    - Set up Clerk provider (`<ClerkProvider>`) in `_app.js`.
+    - Create basic sign-in/sign-up pages using Clerk components (e.g., in `/pages/sign-in.js`, `/pages/sign-up.js`).
+    - Protect API routes using Clerk middleware or helpers (e.g., `withAuth`).
+    - Use Clerk hooks (`useUser`, `useAuth`) on frontend pages to manage auth state.
+    - **Action:** Store Clerk keys (`NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`) in Replit Secrets.
+5.  **Supabase Setup (Mock Backend):**
+    - **Action:** Define environment variables `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` in Replit Secrets (you will need to create a Supabase project and get these values).
+    - **Action:** Create a Supabase client instance initializer in `/lib/supabaseClient.js`.
+    - **Database Schema (Manual Task Reminder):** *User will manually create these tables and add mock data in Supabase:*
+        - `companies`: `id` (uuid, pk), `name` (text), `business_type` (text)
+        - `company_memory`: `id` (uuid, pk), `company_id` (fk to companies.id), `structured_data` (jsonb), `unstructured_transcripts` (jsonb - array of text)
+6.  **Mock API Implementation (in `/pages/api/`):**
+    - **`companies.js`:**
+        - Protect with Clerk.
+        - Use the Supabase client to fetch all entries from the `companies` table.
+        *Return format:* `[{ id: string, name: string }]`
+    - **`company-memory.js`:**
+        - Protect with Clerk.
+        - Expect a `companyId` query parameter.
+        - Use Supabase client to fetch the corresponding entry from `company_memory` where `company_id` matches.
+        *Return format:* `{ structured_data: object, unstructured_transcripts: string[] }` or `null` if not found.
+7.  **Define Mock Form Schema (`/config/formSchema.js`):**
+    - Create this file. Export a JavaScript object defining the form structure. Include `label`, `type` ('text', 'number', 'checkbox_group', 'email'), `required` (boolean), and a basic `validation` function placeholder or simple rule.
+    - *Example Snippet:*
+      ```javascript
+      export const formSchema = {
+        legal_name: { label: 'Legal Name', type: 'text', required: true, validation: (v) => !!v },
+        annual_revenue: { label: 'Annual Revenue', type: 'number', required: false, validation: (v) => v === null || v === '' || (typeof v === 'number' && v >= 0) },
+        num_vehicles: { label: 'Number of Vehicles (Trucking/Auto)', type: 'number', required: false, validation: (v) => v === null || v === '' || (Number.isInteger(v) && v >= 0) },
+        contact_email: { label: 'Contact Email', type: 'email', required: true, validation: (v) => /\S+@\S+\.\S+/.test(v) },
+        // ... add more relevant fields for address, FEIN, etc.
+      };
+      ```
+
+## Phase 1: Core UI & Data Flow (Frontend)
+
+1.  **Main Page (`/pages/index.js`):**
+    - Use Clerk's `<SignedIn>`/`<SignedOut>` components or `useAuth` hook to handle authentication state. Redirect to sign-in if not authenticated.
+    - Fetch the company list from `/api/companies` on component mount using Axios (wrap Axios calls in `/lib/apiClient.js`).
+    - Use Mantine `Select` component to display the company list. Handle loading/error states.
+    - Store the selected company ID in React state (`useState`).
+    - When a company is selected, fetch its memory from `/api/company-memory` using the selected ID.
+    - Store the fetched `structured_data` and `unstructured_transcripts` in React state.
+    - Display loading indicators during API calls. Show user-friendly error messages if fetches fail.
+    - *(Optional Debug View):* Temporarily display the raw fetched memory data.
+
+## Phase 2: Extraction Logic & Form Display
+
+1.  **Extraction Service Stubs (`/lib/extractionService.js`):**
+    - Create `extractWithRules(structuredData, transcripts, schema)`: For now, just return an empty object `{}`. Add a comment indicating this is a placeholder for rule-based logic.
+    - Create `extractWithLLM(structuredData, transcripts, remainingFieldsSchema, previousResults)`: Also return an empty object `{}`. Add a comment indicating this is a placeholder for an LLM call (likely via a backend endpoint).
+2.  **Backend Extraction Endpoint (`/api/extract-data.js`):**
+    - Protect with Clerk.
+    - Accept `structured_data` and `unstructured_transcripts` in the request body.
+    - Import the `formSchema` from `/config/formSchema.js`.
+    - **Simulate Extraction:** Call the stubbed `extractWithRules` and `extractWithLLM`. Combine their (currently empty) results. Add a few hardcoded dummy values for specific fields from the schema for testing purposes (e.g., `{ legal_name: 'Mock Extracted Name', annual_revenue: 50000 }`).
+    - Return the combined (mostly dummy) extracted data as JSON.
+    *Swap Point Comment:* Add a comment indicating this endpoint will later contain the actual extraction logic orchestration.
+3.  **Validation Service (`/lib/validationService.js`):**
+    - Create `validateFormData(formData, schema)`.
+    - Implement basic validation based on the `required` and `validation` functions defined in the `formSchema`.
+    - Return `{ isValid: boolean, errors: { fieldName: 'error message', ... } }`.
+4.  **Trigger Extraction & Form Display (Frontend - `/pages/index.js`):**
+    - After successfully fetching company memory (Phase 1):
+        - Show a loading state ("Extracting form data...").
+        - Call the `/api/extract-data` endpoint, sending the fetched memory data.
+        - On response, take the extracted data.
+        - Run `validateFormData` from `/lib/validationService.js` on the extracted data.
+        - Store both the extracted data *and* the validation errors object in React state (`useState`).
+        - **Dynamically Render Form:**
+            - Map over the `formSchema` entries.
+            - For each entry, render a corresponding Mantine input component (`TextInput`, `NumberInput`, `Checkbox.Group`, etc.).
+            - Bind input values to the form data state.
+            - Display validation error messages (from the errors state) below relevant fields using Mantine `Text` component with color='red'.
+        - Clear loading state.
+
+## Phase 3: Form Editing (Manual & Voice Scaffold)
+
+1.  **Manual Form Editing (Frontend - `/pages/index.js`):**
+    - Implement `onChange` handlers for all dynamically rendered form inputs.
+    - Handlers should:
+        - Update the main form data state.
+        - Immediately call `validateFormData` for the *entire form* (or at least the changed field) and update the validation errors state. This ensures errors appear/disappear as the user types.
+2.  **Voice Input UI (Frontend - `/pages/index.js`):**
+    - Add a Mantine `Button` ("Record Command").
+    - **Action:** Initialize Deepgram SDK (using an API key stored in Replit Secrets: `DEEPGRAM_API_KEY`). Get a temporary key from Deepgram for browser usage if needed, or plan to proxy through backend.
+    - On button press/hold: Implement placeholder logic to *simulate* starting recording (e.g., change button text/icon, set a `isRecording` state).
+    - On button release/stop:
+        - Set a `isProcessingVoice` state (show a loader).
+        - **Simulate Sending Audio:** Call a new backend endpoint `/api/process-voice` (POST request, can send empty body for now).
+        *Swap Point Comment:* Add comment indicating this is where real audio data (blob) would be sent.
+3.  **Backend Voice Processing Endpoint (`/api/process-voice.js`):**
+    - Protect with Clerk.
+    - **Simulate STT and Intent Parsing:** Do not implement actual Deepgram STT or LLM calls here yet.
+    - Return a *mock* JSON response after a short delay (e.g., `setTimeout`). Cycle through a few different mock responses for testing:
+        - `{ intent: 'SET', field: 'legal_name', value: 'Updated via Voice Mock' }`
+        - `{ intent: 'UPDATE', field: 'annual_revenue', value: 120000 }`
+        - `{ intent: 'AMBIGUOUS', message: 'Mock: Please specify which field.' }`
+        - `{ intent: 'OTHER', message: 'Mock: Could not understand command.' }`
+    *Swap Point Comment:* Add comments indicating where real STT and LLM intent classification calls will go.
+4.  **Voice Command Handling (Frontend - `/pages/index.js`):**
+    - In the `.then()` or `await` block after calling `/api/process-voice`:
+        - Clear the `isProcessingVoice` state.
+        - Based on the `intent` in the mock response:
+            - If `SET` or `UPDATE`: Update the corresponding field in the form data state. Re-validate the form data and update errors state. Show a temporary success notification (e.g., Mantine `Notification`).
+            - If `AMBIGUOUS` or `OTHER`: Show the `message` in a notification or alert.
+            - Handle potential errors from the API call itself.
+
+## Phase 4: Mock Form Generation & Download
+
+1.  **Download Button (Frontend - `/pages/index.js`):**
+    - Add a Mantine `Button` ("Generate & Download PDF").
+    - Disable the button if the `isValid` flag from the validation state is false.
+2.  **Mock PDF Generation Endpoint (`/api/generate-pdf.js`):**
+    - Protect with Clerk.
+    - Accept the current form data state (JSON) in the request body.
+    - Run `validateFormData` one last time. If invalid, return a 400 error response.
+    - **Simulate Anvil Call:**
+        - Log the received form data to the console ("Simulating Anvil PDF generation with data:", `formData`).
+        - Return a simple success JSON response: `{ success: true, message: "PDF generation simulated.", mockPdfUrl: "/path/to/mock.pdf" }`. Do NOT attempt to generate a real PDF.
+    *Swap Point Comment:* Add comments indicating this is where the real Anvil API call and PDF handling logic will be added.
+3.  **Trigger Download (Frontend - `/pages/index.js`):**
+    - On button click:
+        - Set a loading state ("Generating PDF...").
+        - POST the current form data state to `/api/generate-pdf`.
+        - On success response: Clear loading state, show a success notification with the mock message.
+        - On error response: Clear loading state, show an error notification.
+
+## Final Instructions for Agent
+- Use functional components and React Hooks throughout.
+- Employ Mantine UI components for all UI elements (Buttons, Selects, Inputs, Notifications, Loaders).
+- Make API calls using Axios, preferably through a reusable client setup in `/lib/apiClient.js`.
+- Implement basic loading states (e.g., using Mantine `Loader` or button `loading` prop) and error handling (displaying messages using Mantine `Notification` or `Alert`).
+- Add `// SWAP POINT:` comments where mock implementations need to be replaced with real API calls or logic later.
+- Generate clean, readable, and reasonably modular code. Prioritize functionality over perfect styling for this scaffold.
+- Ensure all necessary environment variables (Clerk, Supabase, Deepgram) are accessed via `process.env` and noted for setup in Replit Secrets.
+
+Please generate the code for this Next.js application scaffold.

@@ -1,0 +1,61 @@
+# Node modules
+node_modules/
+
+# Build output
+.next/
+out/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS / Editor junk
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Environment variables
+.env
+.env.*.local
+.env.local
+
+# VSCode settings
+.vscode/
+
+# Coverage directory from testing
+coverage/
+
+# Optional: local testing databases or cache
+.cache/
+.next/cache/
+
+# Optional: Mac system files
+.AppleDouble
+.LSOverride
+
+# Optional: vercel deployment config overrides
+.vercel/
+
+# Optional: debug log from vercel
+vercel-debug.log
+
+# Optional: Turborepo build cache
+turbo/
+
+# Optional: SASS cache
+.sass-cache/
+
+# Optional: TypeScript build outputs
+*.tsbuildinfo
+
+# Optional: dotenv backups
+.env.backup
+
+# Optional: Next.js build output
+.next/
+
+# Optional: Next.js build output
+.next/

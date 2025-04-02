@@ -1,0 +1,35 @@
+{
+  "name": "workspace",
+  "version": "1.0.0",
+  "main": "middleware.js",
+  "directories": {
+    "lib": "lib"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@clerk/nextjs": "^6.12.12",
+    "@deepgram/sdk": "^3.11.3",
+    "@emotion/react": "^11.14.0",
+    "@google/generative-ai": "^0.24.0",
+    "@mantine/core": "^7.17.3",
+    "@mantine/hooks": "^7.17.3",
+    "@mantine/notifications": "^7.17.3",
+    "@supabase/supabase-js": "^2.49.4",
+    "@tabler/icons-react": "^3.31.0",
+    "axios": "^1.8.4",
+    "formidable": "^3.5.2",
+    "next": "^15.2.4",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  }
+}
