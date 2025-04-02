@@ -1,108 +1,117 @@
 // pages/api/company-memory.js
-import { getAuth } from '@clerk/nextjs/server';
-// Import createClient directly, similar to api/companies.js
-import { createClient } from '@supabase/supabase-js'; 
+import axios from 'axios';
+
+// Helper to combine address parts safely
+function combineAddress(companyData) {
+    const parts = [
+        companyData?.company_street_address_1,
+        companyData?.company_street_address_2,
+        companyData?.company_city,
+        companyData?.company_state,
+        companyData?.company_postal_code
+    ];
+    // Filter out empty/null parts and join
+    const validParts = parts.filter(part => part && typeof part === 'string' && part.trim() !== '');
+    // Add zip logic if needed - sometimes state includes zip
+    // Basic join for now
+    return validParts.join(', ');
+}
+
 
 export default async function handler(req, res) {
-  // Get auth details, including the function to get the Supabase token
-  const { userId, getToken } = getAuth(req); 
-  
-  if (!userId) {
-    console.error("[API/CompanyMemory] Unauthorized access attempt.");
-    return res.status(401).json({ error: "Unauthorized" });
-  }
-
   if (req.method !== 'GET') {
-    console.warn(`[API/CompanyMemory] Method ${req.method} not allowed.`);
     return res.status(405).json({ error: "Method not allowed" });
   }
 
   const { companyId } = req.query;
-
   if (!companyId) {
-    console.error("[API/CompanyMemory] Company ID is required.");
     return res.status(400).json({ error: "Company ID is required" });
   }
 
-  console.log(`[API/CompanyMemory] User ${userId} fetching memory for company ${companyId}...`);
+  const apiUrl = process.env.RETOOL_MEMORY_URL;
+  const apiKey = process.env.RETOOL_API_KEY_MEMORY;
+
+  if (!apiUrl || !apiKey) {
+    console.error("[API/CompanyMemory] Missing Retool URL or API Key.");
+    return res.status(500).json({ error: "Server configuration error." });
+  }
 
   try {
-    // 1. Get the Supabase JWT for the current user
-    const supabaseAccessToken = await getToken({ template: 'supabase' });
+    console.log(`[API/CompanyMemory] Fetching memory for company ${companyId} from Retool...`);
+    const headers = { 'Content-Type': 'application/json', 'X-Workflow-Api-Key': apiKey };
+    const requestBody = { company_id: companyId }; // Use original ID format
 
-    if (!supabaseAccessToken) {
-        console.error("[API/CompanyMemory] Failed to get Supabase token for user.");
-        return res.status(500).json({ error: "Could not authenticate with database service." });
+    const response = await axios.post(apiUrl, requestBody, { headers });
+    const companyJson = response.data?.company?.json;
+
+    if (!companyJson) {
+        console.warn(`[API/CompanyMemory] No company.json data found for company ${companyId}.`);
+        return res.status(200).json({ structured_data: {}, unstructured_transcripts: [] });
     }
 
-    // 2. Create a new Supabase client IN THIS REQUEST SCOPE, authenticated with the user's token
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY; // Still use Anon key for initialization
+    const companyData = companyJson.company || {};
+    const contacts = companyJson.contacts || [];
+    const facts = companyJson.facts || [];
 
-     if (!supabaseUrl || !supabaseKey) {
-        console.error('[API/CompanyMemory] Missing Supabase URL or Anon Key in environment variables.');
-        return res.status(500).json({ error: 'Server configuration error.' });
-    }
-    
-    // Initialize client, passing the JWT in the global headers
-    const supabase = createClient(supabaseUrl, supabaseKey, {
-      global: {
-        headers: {
-          Authorization: `Bearer ${supabaseAccessToken}`, // Pass the user's JWT
-        },
-      },
-    });
+    // Get primary contact details (assuming first contact is primary)
+    const primaryContact = contacts.length > 0 ? contacts[0] : {};
 
-    console.log("[API/CompanyMemory] Created request-scoped Supabase client. Fetching data...");
+    // Prepare structured_data - Map directly from Retool structured fields
+    // Align keys with formSchema.js keys
+    const structured_data = {
+        // Policy Info (Not usually here, needs manual entry or different source)
+        policy_eff_date: null,
+        policy_exp_date: null,
 
-    // 3. Fetch from Supabase using the authenticated client
-    const { data, error } = await supabase
-      .from('company_memory') // Ensure table name is correct
-      .select('structured_data, unstructured_transcripts') // Select the required columns
-      .eq('company_id', companyId) // Filter by company ID
-      .maybeSingle(); // Use maybeSingle() to handle 0 or 1 results gracefully
+        // Applicant Info
+        legal_name: companyData.company_name || null,
+        applicant_address: combineAddress(companyData), // Combine address parts
+        business_phone: companyData.company_primary_phone || primaryContact.contact_primary_phone || null, // Use company phone first, then contact
+        applicant_entity_type: companyData.company_legal_entity_type || null, // Get direct if available
+        fein: companyData.fein || null, // Check if FEIN exists directly
+        sic: companyData.company_sic_code || null, // Get direct if available
+        naics: companyData.company_naics_code || null, // Get direct if available
 
-    if (error) {
-      // Log the specific Supabase error
-      console.error("[API/CompanyMemory] Supabase query error:", error);
-       if (error.code === '42501') { // permission denied
-           console.error("[API/CompanyMemory] RLS Permission Denied.");
-       } else if (error.code === 'PGRST116') { // Not found by .single() - maybeSingle() avoids this being an error
-           console.warn(`[API/CompanyMemory] No memory found in Supabase for company ${companyId}`);
-       }
-      // Return null or an empty object if allowed by RLS but not found, but error for other DB issues
-      if (error.code !== 'PGRST116'){ // PGRST116 is not a fatal error when using maybeSingle
-         return res.status(500).json({ 
-             error: "Failed to fetch company memory from database.", 
-             details: error.message 
-         });
-      }
-    }
+        // Contact Info
+        contact_name: primaryContact.contact_first_name && primaryContact.contact_last_name
+                      ? `${primaryContact.contact_first_name} ${primaryContact.contact_last_name}`
+                      : (primaryContact.contact_first_name || primaryContact.contact_last_name || null), // Combine name parts
+        contact_email: companyData.company_primary_email || primaryContact.contact_primary_email || null, // Use company email first
+        contact_phone: primaryContact.contact_primary_phone || companyData.company_primary_phone || null, // Use contact phone first
 
-    // If data is null (not found or RLS prevented access if policy doesn't error)
-    if (!data) {
-       console.warn(`[API/CompanyMemory] No memory data found or accessible for company ${companyId}. Returning null.`);
-       // Return null as per expected behaviour if not found
-       return res.status(200).json(null); 
-    }
-    
-    console.log(`[API/CompanyMemory] Successfully fetched memory for company ${companyId} from Supabase.`);
-    // Return the data fetched from Supabase
-    return res.status(200).json(data); 
+        // Premises Info (Assuming same as applicant for now)
+        premise_address: combineAddress(companyData), // Default to applicant address
+        city_limits: null, // Typically not structured, needs LLM/Rules
 
-    // --- REMOVE THE OLD MOCK DATA FALLBACK ---
-    /* 
-    // For development purposes, return mock data for each company
-    const mockData = { ... }; 
-    return res.status(200).json(mockData[companyId] || null); 
-    */
-   
+        // Business Details
+        annual_revenue: companyData.company_annual_revenue_usd || null, // Keep as string/null
+        nature_of_business: companyData.company_industry || companyData.company_sub_industry || null, // Use industry first
+        business_description: companyData.company_description || null,
+    };
+
+    // Prepare unstructured_transcripts from facts' content
+    const unstructured_transcripts = facts
+        .map(fact => fact?.content)
+        .filter(content => typeof content === 'string' && content.trim() !== '');
+
+    // Log the structured data prepared *before* sending to extract-data
+    console.log(`[API/CompanyMemory] Prepared structured_data for company ${companyId}:`, JSON.stringify(structured_data, null, 2));
+
+    const result = {
+        structured_data: structured_data,
+        unstructured_transcripts: unstructured_transcripts
+    };
+
+    console.log(`[API/CompanyMemory] Successfully processed memory for company ${companyId}.`);
+    return res.status(200).json(result);
+
   } catch (error) {
-    // Catch errors from getToken or createClient too
-    console.error("[API/CompanyMemory] Unexpected server error:", error);
-     if (error.message.includes('template not found')) {
-        console.error("[API/CompanyMemory] Clerk Supabase template likely missing or misconfigured in Clerk dashboard.");
+    console.error(`[API/CompanyMemory] Error processing memory for company ${companyId}:`, error.response?.data || error.message);
+    const status = error.response?.status || 500;
+     if (status === 404) {
+         console.warn(`[API/CompanyMemory] Retool returned 404 for company ${companyId}.`);
+         return res.status(200).json({ structured_data: {}, unstructured_transcripts: [] });
      }
-    return res.status(500).json({ error: "An unexpected error occurred while fetching company memory." });
+    return res.status(status).json({ error: "Failed to fetch or process company memory." });
   }
 }

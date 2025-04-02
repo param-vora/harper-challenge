@@ -17,6 +17,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@anvilco/anvil": "^3.3.2",
     "@clerk/nextjs": "^6.12.12",
     "@deepgram/sdk": "^3.11.3",
     "@emotion/react": "^11.14.0",
