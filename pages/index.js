@@ -15,6 +15,8 @@ import { getCompanies, getCompanyMemory, extractData, generatePdf, saveFormData,
 import { validateFormData } from '../lib/validationService';
 import { formSchema } from '../config/formSchema';
 
+import { validateAcord125Data } from '../config/formSchema';
+
 const AUTO_SAVE_INTERVAL = 30000; // 30 seconds
 
 export default function Home() {
@@ -376,51 +378,130 @@ export default function Home() {
 
   // --- PDF Generation Trigger ---
   const handleFinalizeAndGenerate = async () => {
-    // 1. Validate form one last time
-    if (!validateForm(formData)) {
-      showNotification({
-        title: 'Validation Error',
-        message: 'Please fix form errors before generating document.',
-        color: 'red',
-      });
-      return;
+    // 1. Validate form one last time using the updated validation function
+    const { isValid, errors } = validateAcord125Data(formData); // Use the validation func from formSchema.js
+    if (!isValid) {
+        setValidationErrors(errors); // Update UI with errors
+        showNotification({
+            title: 'Validation Error',
+            message: 'Please fix the highlighted errors before generating the document.',
+            color: 'red',
+        });
+        // Scroll to the first error? (Optional Enhancement)
+        // const firstErrorField = Object.keys(errors)[0];
+        // if (firstErrorField) {
+        //     document.getElementById(firstErrorField)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        // }
+        return;
     }
 
-    // 2. Ensure latest data is saved before generating
-    console.log("[Frontend] Finalizing... attempting final save.");
-    // Clear any pending auto-save timer
-     if (autoSaveTimerRef.current) {
+    // 2. Optional: Ensure latest data is saved before generating (using mock save)
+    // This is less critical now that generation is the final step, but can be kept for consistency
+    console.log("[Frontend] Finalizing... attempting final mock save.");
+     if (autoSaveTimerRef.current) { // Clear pending auto-save
         clearTimeout(autoSaveTimerRef.current);
         autoSaveTimerRef.current = null;
      }
-     // Trigger save (don't mark as auto-save for notifications)
-    await handleSaveForm(false); // Await the save completion
+    await handleSaveForm(false); // Await the mock save completion (won't block PDF if it fails)
 
-     // Check if save failed (isSaving might still be true if error occurred in handleSaveForm)
-     // We might need better error propagation from handleSaveForm if we need to halt generation
-     // For now, proceed cautiously.
-
-    // 3. Trigger PDF generation (currently mock)
+    // 3. Trigger PDF generation API call
     setIsGeneratingPdf(true);
-    console.log("[Frontend] Generating document...");
+    console.log("[Frontend] Calling API to generate PDF...");
+    const notificationId = 'pdf-generation';
+    showNotification({
+        id: notificationId,
+        title: 'Generating Document',
+        message: 'Please wait while the ACORD 125 form is being generated...',
+        loading: true,
+        color: 'blue',
+        autoClose: false,
+        disallowClose: true,
+    });
+
     try {
-      const result = await generatePdf(formData); // Call the mock generation API
-      showNotification({
-        title: 'Success',
-        message: result.message || "Document download initiated.",
-        color: 'green',
-      });
+        // Send current validated formData to the backend
+        const response = await fetch('/api/generate-pdf', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(formData), // Send the validated form data
+        });
+
+        // Check if the request was successful and response is PDF
+        if (!response.ok) {
+             // Try to parse error message from backend if available
+             let errorDetails = `Server responded with status ${response.status}`;
+             try {
+                const errorJson = await response.json();
+                errorDetails = errorJson.error || errorJson.details || errorDetails;
+             } catch (e) { /* Ignore if response is not JSON */ }
+             throw new Error(errorDetails);
+        }
+
+        // Check content type header to be sure it's a PDF
+        const contentType = response.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/pdf')) {
+             throw new Error('Received unexpected response format from server instead of PDF.');
+        }
+
+        // Get the filename from Content-Disposition header (optional but nice)
+        const disposition = response.headers.get('content-disposition');
+        let filename = 'ACORD_125_Generated.pdf'; // Default filename
+        if (disposition && disposition.indexOf('attachment') !== -1) {
+             const filenameRegex = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/;
+             const matches = filenameRegex.exec(disposition);
+             if (matches != null && matches[1]) {
+                filename = matches[1].replace(/['"]/g, '');
+             }
+        }
+
+        // Get the PDF data as a Blob
+        const blob = await response.blob();
+
+        // Create a temporary URL and trigger download
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.style.display = 'none';
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+
+        // Clean up the temporary URL and anchor element
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+
+        updateNotification({
+             id: notificationId,
+             title: 'Success',
+             message: `Document "${filename}" download initiated.`,
+             color: 'green',
+             icon: <IconCircleCheck size="1rem" />,
+             loading: false,
+             autoClose: 5000,
+             disallowClose: false,
+        });
+
     } catch (error) {
       console.error("[Frontend] Failed to generate document:", error);
-      showNotification({
-        title: 'Error',
-        message: error?.error || 'Failed to generate document.',
-        color: 'red',
+      updateNotification({
+            id: notificationId,
+            title: 'Error Generating Document',
+            message: error.message || 'An unexpected error occurred.',
+            color: 'red',
+            icon: <IconAlertCircle size="1rem" />,
+            loading: false,
+            autoClose: 7000,
+            disallowClose: false,
       });
     } finally {
       setIsGeneratingPdf(false);
     }
   };
+
+  // Make sure you import the validation function at the top of pages/index.js
+  // import { validateAcord125Data } from '../config/formSchema';
+  // And also the icons used in notifications if not already imported
+  // import { IconAlertCircle, IconCircleCheck } from '@tabler/icons-react';
 
 
   // --- Render Logic ---
