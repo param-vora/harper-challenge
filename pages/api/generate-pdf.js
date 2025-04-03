@@ -1,216 +1,243 @@
 // pages/api/generate-pdf.js
 import Anvil from '@anvilco/anvil';
 import { getAuth } from '@clerk/nextjs/server';
-// Agency info is now passed in formData, no longer needed here
-// import { AGENCY_INFO } from '../../config/formSchema';
 
-// --- Parsing/Formatting Helpers (Keep from previous version) ---
+// --- Parsing/Formatting Helpers (REVISED) ---
 function parseAddressToAnvil(fullAddress) {
-    // ... (keep existing implementation - unchanged) ...
-    const result = { street1: '', street2: '', city: '', state: '', zip: '', country: 'US' };
-    if (!fullAddress || typeof fullAddress !== 'string') {
-        return result;
+  if (!fullAddress || typeof fullAddress !== 'string' || fullAddress.trim().length < 5) {
+    console.warn(`[parseAddressToAnvil] Invalid or too short address input: "${fullAddress}"`);
+    return undefined;
+  }
+  const result = { street1: '', street2: '', city: '', state: '', zip: '', country: 'US' };
+  const cleanedAddress = fullAddress.replace(/\s+/g, ' ').trim().replace(/,$/, '');
+  const parts = cleanedAddress.split(',').map(p => p.trim()).filter(p => p);
+  if (parts.length === 0) return undefined;
+
+  // Extract zip code (5 or 9 digits) from last part.
+  const lastPart = parts[parts.length - 1];
+  const zipMatch = lastPart.match(/\b(\d{5}(?:-\d{4})?)$/);
+  if (zipMatch) {
+    result.zip = zipMatch[1];
+    parts[parts.length - 1] = lastPart.substring(0, zipMatch.index).trim();
+    if (parts[parts.length - 1] === '') parts.pop();
+  }
+
+  // Extract state (using common abbreviations)
+  if (parts.length > 0) {
+    const potentialStatePart = parts[parts.length - 1];
+    const states = ["AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY", "DC"];
+    const stateRegex = new RegExp(`\\b(${states.join('|')})\\b$`, 'i');
+    const stateMatch = potentialStatePart.match(stateRegex);
+    if (stateMatch) {
+      result.state = stateMatch[1].toUpperCase();
+      parts[parts.length - 1] = potentialStatePart.substring(0, stateMatch.index).trim();
+      if (parts[parts.length - 1] === '') parts.pop();
     }
-    const parts = fullAddress.split(',').map(p => p.trim());
-    if (parts.length === 0) return result;
+  }
 
-    const lastPart = parts[parts.length - 1];
-    const zipMatch = lastPart.match(/\b\d{5}(?:-\d{4})?\b$/);
-    let statePartInZip = '';
+  // Extract city (last remaining part)
+  if (parts.length > 0) {
+    result.city = parts.pop();
+  }
 
-    if (zipMatch) {
-        result.zip = zipMatch[0];
-        statePartInZip = lastPart.substring(0, zipMatch.index).trim();
-        if (statePartInZip.length > 0 && /^[A-Za-z\s]+$/.test(statePartInZip)) { // Check if it looks like a state name/code
-            result.state = statePartInZip;
-            parts.pop();
-        } else {
-             parts[parts.length - 1] = parts[parts.length - 1].replace(result.zip, '').trim();
-             if(parts[parts.length - 1] === '') parts.pop();
-        }
-    }
-
-     if (!result.state && parts.length > 1) {
-        const potentialStatePart = parts[parts.length - 1];
-         if (/^[A-Za-z]{2}$/.test(potentialStatePart) || (potentialStatePart.length > 3 && potentialStatePart.length < 25)) {
-             result.state = potentialStatePart;
-             parts.pop();
-         }
-     }
-
-    if (parts.length > 0) {
-        result.city = parts.pop();
-    }
-
-    result.street1 = parts.join(', ');
-    const street2Match = result.street1.match(/(.*?)\s+(#|apt|suite|ste|unit)\s*(.*)/i);
-    if (street2Match) {
+  // Combine remaining parts for street address and try to split street2 if applicable.
+  if (parts.length > 0) {
+    result.street1 = parts.join(', ').trim();
+    const street2Keywords = ['#', 'apt', 'suite', 'ste', 'unit', 'fl', 'floor', 'bldg', 'building', 'dept', 'rm', 'room', 'lot'];
+    for (const keyword of street2Keywords) {
+      const regex = new RegExp(`^(.*?)\\s+(${keyword}[\\.\\s]?\\s*[\\d\\w-#].*)$`, 'i');
+      const street2Match = result.street1.match(regex);
+      if (street2Match) {
         result.street1 = street2Match[1].trim();
-        result.street2 = `${street2Match[2]} ${street2Match[3]}`.trim();
+        result.street2 = street2Match[2].trim();
+        break;
+      }
     }
-
-    for (const key in result) {
-       if (result[key] === '') delete result[key];
+    if (result.street1 === '') delete result.street1;
+    if (result.street2 && !result.street1) {
+      result.street1 = result.street2;
+      delete result.street2;
     }
-     if (result.street1) result.street1 = result.street1.replace(/,$/, '').trim();
+  }
 
-    console.log(`[parseAddressToAnvil] Parsed "${fullAddress}" to:`, result);
-    return Object.keys(result).length > 1 ? result : undefined;
+  // Cleanup empty values
+  for (const key in result) {
+    if (result[key] === null || result[key] === undefined || result[key] === '') {
+      delete result[key];
+    }
+  }
+  console.log(`[parseAddressToAnvil] Parsed "${fullAddress}" to:`, result);
+  return Object.keys(result).length > 1 ? result : undefined;
 }
 
 function parseFullNameToAnvil(fullName) {
-     // ... (keep existing implementation - unchanged) ...
-     const result = { firstName: '', lastName: '' };
-     if (!fullName || typeof fullName !== 'string') {
-        return result;
+  const result = { firstName: '', lastName: '' };
+  if (!fullName || typeof fullName !== 'string') return undefined;
+  const parts = fullName.trim().split(/\s+/);
+  if (parts.length === 1 && parts[0]) {
+    result.firstName = parts[0];
+  } else if (parts.length > 1) {
+    const suffixes = ['inc', 'llc', 'ltd', 'corp', 'co', 'group', 'lp', 'llp'];
+    const lastWordLower = parts[parts.length - 1].toLowerCase().replace(/[\.,]$/, '');
+    if (suffixes.includes(lastWordLower) && parts.length > 2) {
+      result.firstName = parts.join(' ');
+    } else {
+      result.lastName = parts.pop();
+      result.firstName = parts.join(' ');
     }
-    const parts = fullName.trim().split(/\s+/);
-    if (parts.length === 1) {
-        result.firstName = parts[0];
-    } else if (parts.length > 1) {
-        result.lastName = parts.pop();
-        result.firstName = parts.join(' ');
-    }
-    return result;
+  }
+  return result.firstName || result.lastName ? result : undefined;
 }
 
 function formatPhoneToAnvil(phone) {
-    // ... (keep existing implementation - unchanged) ...
-    if (!phone || typeof phone !== 'string') return undefined;
-    const digits = phone.replace(/\D/g, '');
-    return digits ? { num: digits } : undefined;
+  if (!phone || typeof phone !== 'string') return undefined;
+  const digits = phone.replace(/\D/g, '');
+  const plausibleDigits = digits.startsWith('1') && digits.length === 11 ? digits.substring(1) : digits;
+  return plausibleDigits.length === 10 ? { num: plausibleDigits } : undefined;
 }
-// --- End Helpers ---
 
+// --- End Helpers ---
 
 export default async function handler(req, res) {
   const { userId } = getAuth(req);
-  if (!userId) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
-
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
+  if (!userId) return res.status(401).json({ error: "Unauthorized" });
+  if (req.method !== 'POST') return res.status(405).json({ error: "Method not allowed" });
 
   const anvilApiKey = process.env.ANVIL_API_KEY;
-  const castEid = '4ya1i67hf2irfjdI0t2b'; // Confirmed Template ID
+  const castEid = '4ya1i67hf2irfjdI0t2b';
 
   if (!anvilApiKey) {
-    console.error('Anvil API Key missing.');
+    console.error('[API/GeneratePdf] Anvil API Key missing.');
     return res.status(500).json({ error: 'PDF generation service not configured.' });
   }
 
   try {
-    const formData = req.body; // Data received from frontend (now includes defaults and agency info)
-    console.log("[API/GeneratePdf] Received formData:", JSON.stringify(formData, null, 2));
+    const formData = req.body;
+    console.log("[API/GeneratePdf] Received raw formData:", JSON.stringify(formData, null, 2));
 
-    // Data Transformation and Mapping based on confirmed Anvil slugs
+    // --- Internal to Anvil Mapping ---
+    // 1. Agency information combined into one string.
+    const agencyString = [
+      formData.agency_name,
+      formData.agency_address,
+      formData.agency_phone ? `Phone: ${formData.agency_phone}` : null,
+      formData.agency_email ? `Email: ${formData.agency_email}` : null,
+      formData.agency_contact_name ? `Contact: ${formData.agency_contact_name}` : null,
+    ].filter(Boolean).join('\n');
+
+    // 2. Applicant Name parsed from legal_name.
+    const applicantNameParsed = parseFullNameToAnvil(formData.legal_name);
+
+    // 3. Mailing Address parsed from applicant_address.
     const applicantAddressParsed = parseAddressToAnvil(formData.applicant_address);
-    const premiseAddressParsed = parseAddressToAnvil(formData.premise_address);
-    // Use legal_name directly (assuming it's a single field now, adjust if parsing needed)
-    // const legalNameParsed = parseFullNameToAnvil(formData.legal_name);
-    const legalNameValue = formData.legal_name || ''; // Handle potential empty string
+
+    // 4. Business Phone parsed from business_phone.
     const businessPhoneFormatted = formatPhoneToAnvil(formData.business_phone);
+
+    // 5. Contact Phone parsed from contact_phone.
     const contactPhoneFormatted = formatPhoneToAnvil(formData.contact_phone);
 
-    // REMOVED: Default/Fallback logic for dates and nature of business - use values from formData
-    // const effectiveDate = formData.policy_eff_date || '2025-04-01';
-    // const expirationDate = formData.policy_exp_date || '2026-04-01';
-    // const natureOfBusinessValue = formData.nature_of_business || 'Other';
+    // 6. Premise Address parsed from premise_address.
+    const premiseAddressParsed = parseAddressToAnvil(formData.premise_address);
 
-    // Construct the agency string for Anvil from formData fields
-    // Assumes Anvil expects a single multi-line string for the 'agency' slug based on previous code.
-    const agencyString = [
-        formData.agency_name,
-        formData.agency_address,
-        formData.agency_phone ? `Phone: ${formData.agency_phone}` : null, // Add phone/email if available
-        formData.agency_email ? `Email: ${formData.agency_email}` : null,
-        formData.agency_contact_name ? `Contact: ${formData.agency_contact_name}` : null,
-    ].filter(Boolean).join('\n'); // Filter out nulls and join with newline
+    // 7. City limits as booleans.
+    const isInsideCityLimits = formData.city_limits === 'Inside';
+    const isOutsideCityLimits = formData.city_limits === 'Outside';
 
-    // Map form data to Anvil slugs
+    // 8. Annual revenue parsed to a number.
+    const annualRevenueValue = (formData.annual_revenue != null && !isNaN(Number(formData.annual_revenue)))
+                               ? Number(formData.annual_revenue) : undefined;
+
+    console.log("[API/GeneratePdf] Parsed Values:", {
+      agencyString,
+      applicantNameParsed,
+      applicantAddressParsed,
+      businessPhoneFormatted,
+      contactPhoneFormatted,
+      premiseAddressParsed,
+      isInsideCityLimits,
+      isOutsideCityLimits,
+      annualRevenueValue
+    });
+
+    // --- Construct Anvil Payload using only the defined fields ---
     const anvilPayloadData = {
-        // --- Agency Info (Now from formData) ---
-        agency: agencyString, // Use the constructed string
-
-        // --- Standard Info ---
-        date: new Date().toISOString().split('T')[0],
-        transactionStatus: "Quote",
-
-        // --- Policy Info (Directly from formData) ---
-        proposedEffectiveDate: formData.policy_eff_date,
-        proposedExpirationDate: formData.policy_exp_date,
-
-        // --- Applicant Info (Page 1) ---
-        applicantName: legalNameValue, // Use the direct value
-        mailingAddress: applicantAddressParsed,
-        businessPhone: businessPhoneFormatted,
-        applicantBusinessType: formData.applicant_entity_type,
-        feinOrSocSec: formData.fein,
-        sic: formData.sic,
-        naics: formData.naics,
-
-        // --- Contact Info (Page 2) ---
-        phoneACNoExt: contactPhoneFormatted, // Maps contact_phone
-        // Add email if slug confirmed: emailSlug: formData.contact_email
-        // Add name if slug confirmed: contactNameSlug: parseFullNameToAnvil(formData.contact_name)
-
-        // --- Premises Info (Page 2 - First Location) ---
-        street: premiseAddressParsed, // Maps premise_address
-        insideCityLimits: formData.city_limits === 'Inside' || undefined, // Keep boolean logic
-        outsideCityLimits: formData.city_limits === 'Outside' || undefined, // Keep boolean logic
-        // Ensure revenue is number or undefined
-        annualRevenues: formData.annual_revenue != null && !isNaN(Number(formData.annual_revenue))
-                        ? Number(formData.annual_revenue)
-                        : undefined,
-
-        // --- Nature of Business (Page 2 - Directly from formData) ---
-        natureOfBusiness: formData.nature_of_business, // Use the value provided (will be 'Other' if defaulted)
-        descriptionOfPrimaryOperations: formData.business_description,
+      agency: agencyString,
+      date: new Date().toISOString().split('T')[0],
+      transactionStatus: "Quote",
+      proposedEffectiveDate: formData.policy_eff_date,
+      proposedExpirationDate: formData.policy_exp_date,
+      applicantName: applicantNameParsed,
+      mailingAddress: applicantAddressParsed,
+      businessPhone: businessPhoneFormatted,
+      applicantBusinessType: formData.applicant_entity_type,
+      feinOrSocSec: formData.fein,
+      sic: formData.sic,
+      naics: formData.naics,
+      phoneACNoExt: contactPhoneFormatted,
+      street: premiseAddressParsed,
+      insideCityLimits: isInsideCityLimits || undefined,
+      outsideCityLimits: isOutsideCityLimits || undefined,
+      annualRevenues: annualRevenueValue,
+      natureOfBusiness: formData.nature_of_business,
+      descriptionOfPrimaryOperations: formData.business_description,
     };
 
-    // Clean up payload: remove null/undefined/empty strings/empty objects
-    for (const key in anvilPayloadData) {
-      const value = anvilPayloadData[key];
-      if (value === null || value === undefined || value === '' || (typeof value === 'object' && value !== null && Object.keys(value).length === 0)) {
-        delete anvilPayloadData[key];
-      } else if (typeof value === 'object' && value !== null) {
-           // Clean sub-objects (like parsed addresses/phones)
-           for (const subKey in value) {
-                if (value[subKey] === null || value[subKey] === undefined || value[subKey] === '') {
-                   delete value[subKey];
-                 }
-           }
-           // Delete the whole object if it became empty after cleaning sub-keys
-           if (Object.keys(value).length === 0) {
-                delete anvilPayloadData[key];
-           }
+    // Clean the payload by removing undefined/null/empty values.
+    const cleanPayload = (obj) => {
+      if (obj === null || obj === undefined) return undefined;
+      if (typeof obj !== 'object') {
+        return (String(obj).trim() === '') ? undefined : obj;
       }
+      if (Array.isArray(obj)) {
+        const cleanedArr = obj.map(cleanPayload).filter(item => item !== undefined);
+        return cleanedArr.length > 0 ? cleanedArr : undefined;
+      }
+      const cleanedObj = {};
+      let hasKeys = false;
+      for (const key in obj) {
+        if (Object.prototype.hasOwnProperty.call(obj, key)) {
+          const cleanedValue = cleanPayload(obj[key]);
+          if (cleanedValue !== undefined) {
+            cleanedObj[key] = cleanedValue;
+            hasKeys = true;
+          }
+        }
+      }
+      return hasKeys ? cleanedObj : undefined;
+    };
+    const finalCleanedData = cleanPayload(anvilPayloadData);
+
+    const payload = {
+      fontSize: 10,
+      textColor: '#000000',
+      data: finalCleanedData || {}
+    };
+
+    console.log('Generating PDF with final clean Anvil payload:', JSON.stringify(payload, null, 2));
+
+    // Check for essential data after cleaning.
+    if (!payload.data.applicantName || !payload.data.mailingAddress || !payload.data.proposedEffectiveDate) {
+      console.error("[API/GeneratePdf] CRITICAL ERROR: Essential data (Applicant Name, Mailing Address, or Effective Date) is missing AFTER cleaning.");
+      return res.status(400).json({
+        error: "Essential applicant data is missing.",
+        details: "Could not process required fields like Applicant Name, Mailing Address, or Effective Date."
+      });
     }
 
-    // Final Anvil payload structure
-    const payload = {
-        // title: `${formData.legal_name || 'applicant'}_ACORD125`, // Optional
-        data: anvilPayloadData
-     };
-
-    console.log('Generating PDF with Anvil payload:', JSON.stringify(payload, null, 2));
-
+    // --- Call Anvil API ---
     const anvilClient = new Anvil({ apiKey: anvilApiKey });
-
     const { statusCode, data, errors } = await anvilClient.fillPDF(castEid, payload);
 
     if (statusCode !== 200 || !data || errors) {
-        console.error('Anvil PDF generation error:', errors || `Status code: ${statusCode}`);
-        console.error('Payload sent:', JSON.stringify(payload, null, 2)); // Log payload on error
-        throw new Error(`Failed to generate PDF from Anvil. Status: ${statusCode}. ${errors ? JSON.stringify(errors) : ''}`);
+      console.error('Anvil PDF generation error. Status:', statusCode, 'Errors:', errors ? JSON.stringify(errors) : 'N/A');
+      const errorMsg = errors ? (errors[0]?.message || JSON.stringify(errors)) : `Anvil API returned status ${statusCode}.`;
+      throw new Error(errorMsg);
     }
 
     const pdfBuffer = Buffer.from(data);
+    const filename = `${(applicantNameParsed?.firstName || 'applicant').replace(/\s+/g, '_')}_ACORD125.pdf`.replace(/[^a-zA-Z0-9_.-]/g, '_');
 
-    // Set headers for PDF download
-    const filename = `${formData.legal_name || 'applicant'}_ACORD125.pdf`.replace(/[^a-zA-Z0-9_.-]/g, '_');
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('Content-Length', pdfBuffer.length);
@@ -219,7 +246,10 @@ export default async function handler(req, res) {
     return res.status(200).send(pdfBuffer);
 
   } catch (error) {
-    console.error('Error in /api/generate-pdf:', error);
-    return res.status(500).json({ error: 'Failed to generate PDF', details: error.message });
+    console.error('Error in /api/generate-pdf handler:', error);
+    return res.status(500).json({
+      error: 'PDF Generation Failed',
+      details: error instanceof Error ? error.message : String(error)
+    });
   }
 }
